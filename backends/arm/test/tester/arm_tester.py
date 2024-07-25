@@ -23,7 +23,6 @@ from executorch.backends.arm.quantizer.arm_quantizer import (
 )
 
 from executorch.backends.arm.test.runner_utils import (
-    _get_input_names,
     _get_input_quantization_params,
     _get_output_node,
     _get_output_quantization_params,
@@ -45,19 +44,24 @@ class Partition(tester.Partition):
         super().dump_artifact(path_to_dump)
 
         to_print = None
-        for spec in self.graph_module.lowered_module_0.compile_specs:
-            if spec.key == "output_format":
-                if spec.value == b"tosa":
-                    tosa_fb = self.graph_module.lowered_module_0.processed_bytes
-                    to_print = dbg_tosa_fb_to_json(tosa_fb)
-                    to_print = pformat(to_print, compact=True, indent=1)
-                    to_print = f"\n TOSA deserialized: \n{to_print}"
-                elif spec.value == b"vela":
-                    vela_cmd_stream = self.graph_module.lowered_module_0.processed_bytes
-                    to_print = str(vela_cmd_stream)
-                    to_print = f"\n Vela command stream: \n{to_print}"
-                break
-        assert to_print is not None, "No TOSA nor Vela compile spec found"
+        if hasattr(self.graph_module, "lowered_module_0"):
+            for spec in self.graph_module.lowered_module_0.compile_specs:
+                if spec.key == "output_format":
+                    if spec.value == b"tosa":
+                        tosa_fb = self.graph_module.lowered_module_0.processed_bytes
+                        to_print = dbg_tosa_fb_to_json(tosa_fb)
+                        to_print = pformat(to_print, compact=True, indent=1)
+                        to_print = f"\n TOSA deserialized: \n{to_print}"
+                    elif spec.value == b"vela":
+                        vela_cmd_stream = (
+                            self.graph_module.lowered_module_0.processed_bytes
+                        )
+                        to_print = str(vela_cmd_stream)
+                        to_print = f"\n Vela command stream: \n{to_print}"
+                    break
+            assert to_print, "No TOSA nor Vela compile spec found"
+        else:
+            to_print = "No delegate with name 'lowered_module_0 found in graph module. Expecting at least one partition."
         _dump_str(to_print, path_to_dump)
 
 
@@ -219,15 +223,18 @@ class ArmTester(Tester):
             self.runner_util is not None
         ), "self.tosa_test_util is not initialized, cannot use run_method()"
         assert (
-            self.stages[self.stage_name(tester.Export)] is not None
-        ), "To compare outputs, at least the Export stage needs to be run."
+            self.stages[self.stage_name(tester.ToEdge)] is not None
+        ), "To compare outputs, at least the ToEdge stage needs to be run."
 
         stage = stage or self.cur
         test_stage = self.stages[stage]
         is_quantized = self.stages[self.stage_name(tester.Quantize)] is not None
-        self.runner_util.init_run(
-            self.stages[self.stage_name(tester.Export)].artifact, is_quantized
-        )
+
+        exported_program = self.stages[self.stage_name(tester.Export)].artifact
+        edge_program = self.stages[
+            self.stage_name(tester.ToEdge)
+        ].artifact.exported_program()
+        self.runner_util.init_run(exported_program, edge_program, is_quantized)
 
         if is_quantized:
             reference_stage = self.stages[self.stage_name(tester.Quantize)]
@@ -373,11 +380,8 @@ class ArmTester(Tester):
             export_stage = self.stages.get(self.stage_name(tester.Export), None)
             quantize_stage = self.stages.get(self.stage_name(tester.Quantize), None)
             if export_stage is not None and quantize_stage is not None:
-                input_names = _get_input_names(export_stage.artifact)
                 output_node = _get_output_node(export_stage.artifact)
-                qp_input = _get_input_quantization_params(
-                    export_stage.artifact, input_names
-                )
+                qp_input = _get_input_quantization_params(export_stage.artifact)
                 qp_output = _get_output_quantization_params(
                     export_stage.artifact, output_node
                 )
