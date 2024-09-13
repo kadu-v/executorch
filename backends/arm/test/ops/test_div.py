@@ -180,9 +180,7 @@ class TestDiv(unittest.TestCase):
         test_data = (input_, other_)
         self._test_div_tosa_BI_pipeline(self.Div(), test_data)
 
-    # Fails due to Vela error.
     @parameterized.expand(test_data_suite)
-    @unittest.expectedFailure
     def test_div_u55_BI(
         self,
         test_name: str,
