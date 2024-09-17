@@ -3,6 +3,8 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
+# pyre-unsafe
+
 from . import (  # noqa
     node_visitor,
     op_add,
@@ -14,9 +16,11 @@ from . import (  # noqa
     op_conv2d,
     op_dequant,
     op_div,
+    op_exp,
     op_full,
     op_get_item,
     op_hardtanh,
+    op_log,
     op_mean_dim,
     op_mm,
     op_mul,

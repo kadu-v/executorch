@@ -59,9 +59,7 @@ This example is verified with SM8550 and SM8450.
    - Click the "Get Software" button to download a version of QNN SDK.
    - However, at the moment of updating this tutorial, the above website doesn't provide QNN SDK newer than 2.22.6.
    - The below is public links to download various QNN versions. Hope they can be publicly discoverable soon.
-   - [QNN 2.25.0](https://softwarecenter.qualcomm.com/api/download/software/qualcomm_neural_processing_sdk/v2.25.0.240728.zip)
-   - [QNN 2.24.0](https://softwarecenter.qualcomm.com/api/download/software/qualcomm_neural_processing_sdk/v2.24.0.240626.zip)
-   - [QNN 2.23.0](https://softwarecenter.qualcomm.com/api/download/software/qualcomm_neural_processing_sdk/v2.23.0.24.06.24.zip)
+   - [QNN 2.26.0](https://softwarecenter.qualcomm.com/api/download/software/qualcomm_neural_processing_sdk/v2.26.0.240828.zip)
 
 The directory with installed Qualcomm AI Engine Direct SDK looks like:
 ```
@@ -134,8 +132,9 @@ cmake .. \
   -DCMAKE_INSTALL_PREFIX=$PWD \
   -DEXECUTORCH_BUILD_QNN=ON \
   -DQNN_SDK_ROOT=${QNN_SDK_ROOT} \
-  -DEXECUTORCH_BUILD_SDK=ON \
+  -DEXECUTORCH_BUILD_DEVTOOLS=ON \
   -DEXECUTORCH_BUILD_EXTENSION_MODULE=ON \
+  -DEXECUTORCH_BUILD_EXTENSION_TENSOR=ON \
   -DEXECUTORCH_ENABLE_EVENT_TRACER=ON \
   -DPYTHON_EXECUTABLE=python3 \
   -DEXECUTORCH_SEPARATE_FLATCC_HOST_PROJECT=OFF
@@ -165,8 +164,9 @@ cmake .. \
     -DCMAKE_INSTALL_PREFIX=$PWD \
     -DEXECUTORCH_BUILD_QNN=ON \
     -DQNN_SDK_ROOT=$QNN_SDK_ROOT \
-    -DEXECUTORCH_BUILD_SDK=ON \
+    -DEXECUTORCH_BUILD_DEVTOOLS=ON \
     -DEXECUTORCH_BUILD_EXTENSION_MODULE=ON \
+    -DEXECUTORCH_BUILD_EXTENSION_TENSOR=ON \
     -DEXECUTORCH_ENABLE_EVENT_TRACER=ON \
     -DPYTHON_EXECUTABLE=python3 \
     -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK_ROOT/build/cmake/android.toolchain.cmake \
@@ -354,7 +354,7 @@ Please refer to `$EXECUTORCH_ROOT/examples/qualcomm/scripts/` and `EXECUTORCH_RO
 
 ## What is coming?
 
- - [llama2 and llama3](https://github.com/pytorch/executorch/pull/4030). Note that at the moment of writing, we still suffer from the quantization issue in llama2-7B and llama3-8B cases. Only storiesllama works well.
+ - Improve the performance for llama3-8B-Instruct and support batch prefill.
  - We will support pre-compiled binaries from [Qualcomm AI Hub](https://aihub.qualcomm.com/).
 
 ## FAQ

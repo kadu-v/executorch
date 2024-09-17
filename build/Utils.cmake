@@ -65,6 +65,9 @@ function(executorch_print_configuration_summary)
   message(STATUS "  EXECUTORCH_BUILD_EXTENSION_RUNNER_UTIL : "
                  "${EXECUTORCH_BUILD_EXTENSION_RUNNER_UTIL}"
   )
+  message(STATUS "  EXECUTORCH_BUILD_EXTENSION_TENSOR      : "
+                 "${EXECUTORCH_BUILD_EXTENSION_TENSOR}"
+  )
   message(
     STATUS
       "  EXECUTORCH_BUILD_FLATC                 : ${EXECUTORCH_BUILD_FLATC}"
@@ -97,7 +100,7 @@ function(executorch_print_configuration_summary)
                  "${EXECUTORCH_BUILD_KERNELS_QUANTIZED}"
   )
   message(
-    STATUS "  EXECUTORCH_BUILD_SDK                   : ${EXECUTORCH_BUILD_SDK}"
+    STATUS "  EXECUTORCH_BUILD_DEVTOOLS              : ${EXECUTORCH_BUILD_DEVTOOLS}"
   )
   message(
     STATUS

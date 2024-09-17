@@ -14,6 +14,7 @@ import pytest
 import torch
 
 from executorch.backends.arm.arm_backend import ArmCompileSpecBuilder
+from executorch.exir.backend.compile_spec_schema import CompileSpec
 
 _enabled_options: list[str] = []
 
@@ -108,7 +109,9 @@ def maybe_get_tosa_collate_path() -> str | None:
     return None
 
 
-def get_tosa_compile_spec(permute_memory_to_nhwc=True, custom_path=None):
+def get_tosa_compile_spec(
+    permute_memory_to_nhwc=True, custom_path=None
+) -> list[CompileSpec]:
     """
     Default compile spec for TOSA tests.
     """
@@ -141,8 +144,8 @@ def get_tosa_compile_spec_unbuilt(
 
 
 def get_u55_compile_spec(
-    permute_memory_to_nhwc=False, quantize_io=False, custom_path=None
-):
+    permute_memory_to_nhwc=True, quantize_io=False, custom_path=None
+) -> list[CompileSpec]:
     """
     Default compile spec for Ethos-U55 tests.
     """
@@ -151,10 +154,21 @@ def get_u55_compile_spec(
     ).build()
 
 
+def get_u85_compile_spec(
+    permute_memory_to_nhwc=True, quantize_io=False, custom_path=None
+) -> list[CompileSpec]:
+    """
+    Default compile spec for Ethos-U85 tests.
+    """
+    return get_u85_compile_spec_unbuilt(
+        permute_memory_to_nhwc, quantize_io=quantize_io, custom_path=custom_path
+    ).build()
+
+
 def get_u55_compile_spec_unbuilt(
-    permute_memory_to_nhwc=False, quantize_io=False, custom_path=None
+    permute_memory_to_nhwc=True, quantize_io=False, custom_path=None
 ) -> ArmCompileSpecBuilder:
-    """Get the ArmCompileSpecBuilder for the default TOSA tests, to modify
+    """Get the ArmCompileSpecBuilder for the Ethos-U55 tests, to modify
     the compile spec before calling .build() to finalize it.
     """
     artifact_path = custom_path or tempfile.mkdtemp(prefix="arm_u55_")
@@ -166,7 +180,29 @@ def get_u55_compile_spec_unbuilt(
             "ethos-u55-128",
             system_config="Ethos_U55_High_End_Embedded",
             memory_mode="Shared_Sram",
-            extra_flags=None,
+            extra_flags="--debug-force-regor --output-format=raw",
+        )
+        .set_quantize_io(is_option_enabled("quantize_io") or quantize_io)
+        .set_permute_memory_format(permute_memory_to_nhwc)
+        .dump_intermediate_artifacts_to(artifact_path)
+    )
+    return compile_spec
+
+
+def get_u85_compile_spec_unbuilt(
+    permute_memory_to_nhwc=True, quantize_io=False, custom_path=None
+) -> list[CompileSpec]:
+    """Get the ArmCompileSpecBuilder for the Ethos-U85 tests, to modify
+    the compile spec before calling .build() to finalize it.
+    """
+    artifact_path = custom_path or tempfile.mkdtemp(prefix="arm_u85_")
+    compile_spec = (
+        ArmCompileSpecBuilder()
+        .ethosu_compile_spec(
+            "ethos-u85-128",
+            system_config="Ethos_U85_SYS_DRAM_Mid",
+            memory_mode="Shared_Sram",
+            extra_flags="--output-format=raw",
         )
         .set_quantize_io(is_option_enabled("quantize_io") or quantize_io)
         .set_permute_memory_format(permute_memory_to_nhwc)

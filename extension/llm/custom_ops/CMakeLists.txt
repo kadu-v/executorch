@@ -75,6 +75,7 @@ if(EXECUTORCH_BUILD_KERNELS_CUSTOM_AOT)
   add_library(
     custom_ops_aot_lib SHARED
     ${_custom_ops__srcs} ${CMAKE_CURRENT_SOURCE_DIR}/op_sdpa_aot.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/op_tile_crop_aot.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/op_tile_crop.cpp
   )
   target_include_directories(
@@ -93,7 +94,10 @@ if(EXECUTORCH_BUILD_KERNELS_CUSTOM_AOT)
     target_link_libraries(custom_ops_aot_lib PUBLIC executorch_no_prim_ops)
   endif()
 
-  target_link_libraries(custom_ops_aot_lib PUBLIC cpublas torch)
+  target_link_libraries(
+    custom_ops_aot_lib PUBLIC cpublas torch extension_tensor
+                              extension_threadpool
+  )
   if(WIN32)
     # There is no direct replacement for libpthread.so on Windows. For the
     # Windows build, link directly against pthreadpool and cpuinfo.

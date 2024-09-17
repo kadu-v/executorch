@@ -8,7 +8,7 @@
 
 #include <executorch/backends/vulkan/test/utils/test_utils.h>
 
-#include <executorch/runtime/core/portable_type/half.h>
+#include <executorch/runtime/core/exec_aten/exec_aten.h>
 
 #include <executorch/backends/vulkan/runtime/graph/ops/impl/utils/TensorUtils.h>
 
@@ -85,7 +85,8 @@ void record_nchw_to_image_op(
           vkapi::PipelineStage::COMPUTE,
           vkapi::MemoryAccessType::WRITE),
       src_buffer,
-      v_dst.sizes_ubo());
+      v_dst.sizes_ubo(),
+      v_dst.axis_map_ubo());
 }
 
 void record_image_to_nchw_op(
@@ -106,7 +107,8 @@ void record_image_to_nchw_op(
       0,
       dst_buffer,
       v_src.image(pipeline_barrier, vkapi::PipelineStage::COMPUTE),
-      v_src.sizes_ubo());
+      v_src.sizes_ubo(),
+      v_src.axis_map_ubo());
 }
 
 void record_int8_image_to_nchw_noint8_op(
@@ -127,6 +129,7 @@ void record_int8_image_to_nchw_noint8_op(
       dst_buffer.buffer(),
       v_src.image(pipeline_barrier, vkapi::PipelineStage::COMPUTE),
       v_src.sizes_ubo(),
+      v_src.axis_map_ubo(),
       v_src.numel_ubo());
 }
 
@@ -311,6 +314,44 @@ void record_reference_matmul(
       mat2.strides_ubo());
 }
 
+void record_matmul_texture3d(
+    api::Context* context,
+    api::vTensor& out,
+    api::vTensor& mat1,
+    api::vTensor& mat2) {
+  std::string kernel_name = "matmul_naive";
+  kernel_name.reserve(kShaderNameReserve);
+  add_storage_type_suffix(kernel_name, out.storage_type());
+  add_dtype_suffix(kernel_name, out.dtype());
+
+  utils::uvec3 global_wg_size = out.logical_extents();
+
+  vkapi::PipelineBarrier pipeline_barrier{};
+  api::context()->submit_compute_job(
+      VK_KERNEL_FROM_STR(kernel_name),
+      pipeline_barrier,
+      global_wg_size,
+      {8, 8, 1},
+      {out.packed_dim_whcn_idx(),
+       mat1.packed_dim_whcn_idx(),
+       mat2.packed_dim_whcn_idx()},
+      VK_NULL_HANDLE,
+      0,
+      out.image(
+          pipeline_barrier,
+          vkapi::PipelineStage::COMPUTE,
+          vkapi::MemoryAccessType::WRITE),
+      mat1.image(pipeline_barrier, vkapi::PipelineStage::COMPUTE),
+      mat2.image(pipeline_barrier, vkapi::PipelineStage::COMPUTE),
+      out.sizes_ubo(),
+      out.logical_limits_ubo(),
+      out.axis_map_ubo(),
+      mat1.sizes_ubo(),
+      mat1.axis_map_ubo(),
+      mat2.sizes_ubo(),
+      mat2.axis_map_ubo());
+}
+
 //
 // Input & Output Utilities
 //
@@ -319,22 +360,22 @@ void record_reference_matmul(
   _(uint8_t, Byte)                \
   _(int8_t, Char)                 \
   _(int32_t, Int)                 \
-  _(torch::executor::Half, Half)  \
+  _(exec_aten::Half, Half)        \
   _(float, Float)                 \
   _(int8_t, QInt8)
 
 void fill_vtensor(api::vTensor& vten, std::vector<float>& data) {
   api::StagingBuffer staging_buffer(api::context(), vten.dtype(), data.size());
 
-#define CASE(ctype, name)                                                     \
-  case vkapi::ScalarType::name: {                                             \
-    std::vector<ctype> data_converted;                                        \
-    data_converted.resize(data.size());                                       \
-    for (int i = 0; i < data.size(); ++i) {                                   \
-      data_converted[i] = ctype(data[i]);                                     \
-    }                                                                         \
-    copy_ptr_to_staging(                                                      \
-        data_converted.data(), staging_buffer, vten.staging_buffer_nbytes()); \
+#define CASE(ctype, name)                                     \
+  case vkapi::ScalarType::name: {                             \
+    std::vector<ctype> data_converted;                        \
+    data_converted.resize(data.size());                       \
+    for (int i = 0; i < data.size(); ++i) {                   \
+      data_converted[i] = ctype(data[i]);                     \
+    }                                                         \
+    staging_buffer.copy_from(                                 \
+        data_converted.data(), vten.staging_buffer_nbytes()); \
   } break;
 
   switch (vten.dtype()) {
@@ -424,14 +465,14 @@ void extract_vtensor(api::vTensor& vten, std::vector<float>& data) {
   api::context()->submit_cmd_to_gpu(fence.get_submit_handle());
   fence.wait();
 
-#define CASE(ctype, name)                                                     \
-  case vkapi::ScalarType::name: {                                             \
-    std::vector<ctype> data_converted(data.size());                           \
-    copy_staging_to_ptr(                                                      \
-        staging_buffer, data_converted.data(), vten.staging_buffer_nbytes()); \
-    for (int i = 0; i < data.size(); ++i) {                                   \
-      data[i] = float(data_converted[i]);                                     \
-    }                                                                         \
+#define CASE(ctype, name)                                     \
+  case vkapi::ScalarType::name: {                             \
+    std::vector<ctype> data_converted(data.size());           \
+    staging_buffer.copy_to(                                   \
+        data_converted.data(), vten.staging_buffer_nbytes()); \
+    for (int i = 0; i < data.size(); ++i) {                   \
+      data[i] = float(data_converted[i]);                     \
+    }                                                         \
   } break;
 
   switch (vten.dtype()) {
@@ -454,8 +495,10 @@ void submit_to_gpu() {
 }
 
 vkapi::Allocation allocate_memory_for(const api::vTensor& vten) {
+  VmaAllocationCreateInfo alloc_create_info =
+      api::context()->adapter_ptr()->vma().gpuonly_resource_create_info();
   return api::context()->adapter_ptr()->vma().create_allocation(
-      vten.get_memory_requirements(), vten.get_allocation_create_info());
+      vten.get_memory_requirements(), alloc_create_info);
 }
 
 VmaTotalStatistics get_vma_stats() {

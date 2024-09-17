@@ -39,6 +39,7 @@ class RMSNorm(torch.nn.Module):
 
         """
         super().__init__()
+        self.dim = dim
         self.eps = eps
         self.weight = nn.Parameter(torch.ones(dim))
 
@@ -217,9 +218,9 @@ class SDPA(nn.Module):
     def forward(
         self,
         input_pos: torch.Tensor,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
+        q: torch.Tensor,  # Already have rotary embeddings. (bs, seqlen, n_local_heads, head_dim)
+        k: torch.Tensor,  # Already have rotary embeddings. (bs, seqlen, n_local_kv_heads, head_dim)
+        v: torch.Tensor,  # (bs, seqlen, n_local_kv_heads, head_dim)
         bsz,
         seqlen,
         mask: torch.Tensor,

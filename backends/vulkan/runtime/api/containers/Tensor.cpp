@@ -80,6 +80,42 @@ std::vector<int64_t> calculate_strides(
   return strides;
 }
 
+/*
+ * Axis mapping is somewhat analogous to strides for texture backed tensors.
+ *
+ * The axis mapping is normalized to 4 dimensions, similar to the padded sizes.
+ * The first 3 values of the axis mapping indicate the (X,Y,Z) image texture
+ * axis that corresponds to the width, height, and channels dimension of the
+ * tensor. Thus the axis mapping can be considered to be in WHCN dimension
+ * order.
+ *
+ * The last value `axis_map.at(3)` indicates the WHCN index of the tensor
+ * dimension along which batches will be concatenated. This dimension can be
+ * referred to as the "inner dimension" To determine which image texture axis is
+ * used for the concatenation, a double lookup will need to be performed
+ * (axis_map.at(axis_map.at(3))).
+ *
+ * The reason for strucuring axis mapping this way is because for the batch dim,
+ * two things need to be easily derived:
+ *
+ * 1. The dim idx of the inner dimension, so that the size of the inner
+ *    dimension can be easily determined.
+ * 2. The texture axis used to concatenate batches
+ *
+ * By storing the dim index of the inner dimension instead of the texture axis
+ * it maps to, both pieces of information are readily available.
+ *
+ * The axis mapping allows for permuted views of texture-backed tensors.
+ */
+std::vector<int64_t> default_axis_map() {
+  // Currently, all compute shaders have an assumption that the channels dim is
+  // used to combine with the batch dim of a tensor. However, once dim mapping
+  // is integrated into the tensor indexing logic for each compute shader, we
+  // can be more flexible with mapping the batch dim to different texture axes
+  // in order to improve performance or memory footprint.
+  return {0, 1, 2, 2};
+}
+
 bool dim_order_is_valid(const std::vector<int64_t>& dim_order) {
   int64_t sum = 0;
   for (size_t i = 0; i < dim_order.size(); ++i) {
@@ -137,30 +173,44 @@ std::vector<int64_t> calculate_padded_sizes(
 
 utils::uvec3 calculate_image_extents(
     const std::vector<int64_t>& padded_sizes,
+    const std::vector<int64_t>& axis_map,
     const utils::GPUMemoryLayout memory_layout) {
   VK_CHECK_COND(padded_sizes.size() == 4);
+  VK_CHECK_COND(axis_map.size() == 4);
 
-  uint32_t N = utils::safe_downcast<uint32_t>(padded_sizes.at(0));
-  uint32_t C = utils::safe_downcast<uint32_t>(padded_sizes.at(1));
-  uint32_t H = utils::safe_downcast<uint32_t>(padded_sizes.at(2));
-  uint32_t W = utils::safe_downcast<uint32_t>(padded_sizes.at(3));
+  utils::uvec3 extents({1, 1, 1});
+  // First three elements of axis_map indicate which (X,Y,Z) image axis the
+  // width, height, and channels dim of the tensor maps to.
+  for (int whcn_dim = 0; whcn_dim < 3; ++whcn_dim) {
+    const int64_t axis = axis_map.at(whcn_dim);
+    const int64_t dim = padded_sizes.size() - 1 - whcn_dim;
+    extents[axis] = utils::safe_downcast<uint32_t>(padded_sizes.at(dim));
+  }
+
+  // axis_map[3] indicates the WHCN index of the dimension used for batch
+  // concatenation. Thus a double lookup is required to determine the image axis
+  // used for batch concatenation.
+  const int64_t concatted_whcn_dim = axis_map.at(3);
+  const int64_t batch_axis = axis_map.at(concatted_whcn_dim);
+  // Multiply the extents of the batch axis by the batch size.
+  extents[batch_axis] *= padded_sizes.at(0);
 
   switch (memory_layout) {
     case utils::kWidthPacked:
-      VK_CHECK_COND(W % 4 == 0);
-      W /= 4;
+      VK_CHECK_COND(extents[axis_map.at(0)] % 4 == 0);
+      extents[axis_map.at(0)] /= 4;
       break;
     case utils::kHeightPacked:
-      VK_CHECK_COND(H % 4 == 0);
-      H /= 4;
+      VK_CHECK_COND(extents[axis_map.at(1)] % 4 == 0);
+      extents[axis_map.at(1)] /= 4;
       break;
     case utils::kChannelsPacked:
-      VK_CHECK_COND(C % 4 == 0);
-      C /= 4;
+      VK_CHECK_COND(extents[axis_map.at(2)] % 4 == 0);
+      extents[axis_map.at(2)] /= 4;
       break;
   }
 
-  return {W, H, C * N};
+  return extents;
 }
 
 //
@@ -176,25 +226,30 @@ vTensor::vTensor(
     const bool allocate_memory)
     : dtype_(dtype),
       memory_layout_(memory_layout),
-      // Calculate tensor size metadata
+      // Calculate tensor metadata
       sizes_(sizes.begin(), sizes.end()),
       dim_order_(calculate_dim_order(sizes_.size(), memory_layout_)),
+      axis_map_(default_axis_map()),
       strides_(calculate_strides(sizes, dim_order_)),
       numel_(utils::multiply_integers(sizes_)),
       padded_sizes_{calculate_padded_sizes(sizes, memory_layout_)},
       unsqueezed_strides_{unsqueeze_strides(strides_, numel_)},
       padded_numel_(utils::multiply_integers(padded_sizes_)),
       texture_limits_{{0, 0, 0}},
+      logical_limits_{{0, 0, 0}},
       // Utility Uniform Buffers that can be passed to shaders as arguments
       sizes_uniform_(),
       strides_uniform_(),
       numel_uniform_(),
+      axis_map_uniform_(),
       texture_limits_uniform_(),
+      logical_limits_uniform_(),
       // Construct Tensor storage
       storage_(
           context,
           storage_type,
           memory_layout_,
+          axis_map_,
           padded_sizes_,
           dtype_,
           allocate_memory) {
@@ -206,6 +261,8 @@ vTensor::vTensor(
         utils::safe_downcast<int32_t>(storage_.image_extents_[0]),
         utils::safe_downcast<int32_t>(storage_.image_extents_[1]),
         utils::safe_downcast<int32_t>(storage_.image_extents_[2])};
+
+    update_logical_limits();
   }
 
   if (dtype == vkapi::kHalf) {
@@ -222,6 +279,7 @@ vTensor::vTensor(const vTensor& other)
       // Copy tensor size metadata
       sizes_(other.sizes_.begin(), other.sizes_.end()),
       dim_order_(other.dim_order_.begin(), other.dim_order_.end()),
+      axis_map_(other.axis_map_.begin(), other.axis_map_.end()),
       strides_(other.strides_.begin(), other.strides_.end()),
       numel_(other.numel_),
       padded_sizes_{other.padded_sizes_.begin(), other.padded_sizes_.end()},
@@ -230,11 +288,14 @@ vTensor::vTensor(const vTensor& other)
           other.unsqueezed_strides_.end()},
       padded_numel_(other.padded_numel_),
       texture_limits_{other.texture_limits_},
+      logical_limits_{other.logical_limits_},
       // Empty initialize Utility Uniform Buffers
       sizes_uniform_(),
       strides_uniform_(),
       numel_uniform_(),
+      axis_map_uniform_(),
       texture_limits_uniform_(),
+      logical_limits_uniform_(),
       // Copy Tensor storage
       storage_(other.storage_) {}
 
@@ -248,17 +309,21 @@ vTensor::vTensor(
       // Copy tensor size metadata
       sizes_(sizes.begin(), sizes.end()),
       dim_order_(dim_order.begin(), dim_order.end()),
+      axis_map_(default_axis_map()),
       strides_(calculate_strides(sizes_, dim_order_)),
       numel_(utils::multiply_integers(sizes_)),
       padded_sizes_{calculate_padded_sizes(sizes, memory_layout_)},
       unsqueezed_strides_{unsqueeze_strides(strides_, numel_)},
       padded_numel_(utils::multiply_integers(padded_sizes_)),
-      texture_limits_{{0, 0, 0}},
+      texture_limits_{other.texture_limits_},
+      logical_limits_(other.logical_limits_),
       // Empty initialize Utility Uniform Buffers
       sizes_uniform_(),
       strides_uniform_(),
       numel_uniform_(),
+      axis_map_uniform_(),
       texture_limits_uniform_(),
+      logical_limits_uniform_(),
       // Copy Tensor storage
       storage_(other.storage_, vkapi::element_size(dtype_) * offset_numel) {
   VK_CHECK_COND(
@@ -299,6 +364,20 @@ vkapi::VulkanBuffer& vTensor::buffer(
   return storage_.buffer_;
 }
 
+void vTensor::update_logical_limits() {
+  logical_limits_.limits[0] = texture_limits_.limits[axis_map_.at(0)];
+  logical_limits_.limits[1] = texture_limits_.limits[axis_map_.at(1)];
+  logical_limits_.limits[2] = texture_limits_.limits[axis_map_.at(2)];
+}
+
+utils::uvec3 vTensor::logical_extents() const {
+  utils::uvec3 logical_extents(
+      {utils::safe_downcast<uint32_t>(logical_limits_.limits[0]),
+       utils::safe_downcast<uint32_t>(logical_limits_.limits[1]),
+       utils::safe_downcast<uint32_t>(logical_limits_.limits[2])});
+  return logical_extents;
+}
+
 const vkapi::BufferBindInfo vTensor::sizes_ubo() {
   if (!sizes_uniform_.buffer()) {
     sizes_uniform_ =
@@ -315,11 +394,26 @@ const vkapi::BufferBindInfo vTensor::strides_ubo() {
   return vkapi::BufferBindInfo(strides_uniform_.buffer());
 }
 
+const vkapi::BufferBindInfo vTensor::axis_map_ubo() {
+  if (!axis_map_uniform_.buffer()) {
+    axis_map_uniform_ =
+        ParamsBuffer(storage_.context_, utils::make_ivec4(axis_map_));
+  }
+  return vkapi::BufferBindInfo(axis_map_uniform_.buffer());
+}
+
 const vkapi::BufferBindInfo vTensor::texture_limits_ubo() {
   if (!texture_limits_uniform_.buffer()) {
     texture_limits_uniform_ = ParamsBuffer(storage_.context_, texture_limits_);
   }
   return vkapi::BufferBindInfo(texture_limits_uniform_.buffer());
+}
+
+const vkapi::BufferBindInfo vTensor::logical_limits_ubo() {
+  if (!logical_limits_uniform_.buffer()) {
+    logical_limits_uniform_ = ParamsBuffer(storage_.context_, logical_limits_);
+  }
+  return vkapi::BufferBindInfo(logical_limits_uniform_.buffer());
 }
 
 const vkapi::BufferBindInfo vTensor::numel_ubo() {
@@ -340,17 +434,6 @@ size_t vTensor::staging_buffer_numel() const {
     return numel_;
   }
   return padded_numel_;
-}
-
-VmaAllocationCreateInfo vTensor::get_allocation_create_info() const {
-  switch (storage_type()) {
-    case utils::kBuffer:
-      return storage_.buffer_.allocation_create_info();
-    case utils::kTexture2D:
-    case utils::kTexture3D:
-      return storage_.image_.allocation_create_info();
-  }
-  return {};
 }
 
 VkMemoryRequirements vTensor::get_memory_requirements() const {
@@ -376,11 +459,7 @@ void vTensor::bind_allocation(const vkapi::Allocation& allocation) {
   }
 }
 
-void vTensor::update_metadata(
-    const std::vector<int64_t>& new_sizes,
-    const std::vector<int64_t>& new_dim_order) {
-  sizes_ = new_sizes;
-  dim_order_ = new_dim_order;
+void vTensor::update_metadata() {
   strides_ = calculate_strides(sizes_, dim_order_);
   // Only update the memory layout for buffer-backed tensors. Strides are
   // meaningless for texture-backed tensors and do not impact the memory layout.
@@ -396,7 +475,7 @@ void vTensor::update_metadata(
   // Calculate the extents of the image texture that would have been required
   // for a tensor of the new sizes.
   utils::uvec3 virtual_extents =
-      calculate_image_extents(padded_sizes_, memory_layout_);
+      calculate_image_extents(padded_sizes_, axis_map_, memory_layout_);
 
   // Update the texture limits to reflect the new virtual extents.
   texture_limits_.limits = utils::ivec3{
@@ -404,17 +483,25 @@ void vTensor::update_metadata(
       utils::safe_downcast<int32_t>(virtual_extents[1]),
       utils::safe_downcast<int32_t>(virtual_extents[2])};
 
+  update_logical_limits();
+
   if (sizes_uniform_.buffer()) {
     sizes_uniform_.update(utils::make_whcn_ivec4(sizes_));
-  }
-  if (texture_limits_uniform_.buffer()) {
-    texture_limits_uniform_.update(texture_limits_);
   }
   if (strides_uniform_.buffer()) {
     strides_uniform_.update(utils::make_whcn_ivec4(unsqueezed_strides_));
   }
   if (numel_uniform_.buffer()) {
     numel_uniform_.update(numel_);
+  }
+  if (axis_map_uniform_.buffer()) {
+    axis_map_uniform_.update(utils::make_ivec4(axis_map_));
+  }
+  if (texture_limits_uniform_.buffer()) {
+    texture_limits_uniform_.update(texture_limits_);
+  }
+  if (logical_limits_uniform_.buffer()) {
+    logical_limits_uniform_.update(logical_limits_);
   }
 }
 
@@ -423,7 +510,7 @@ void vTensor::check_sizes(const std::vector<int64_t>& sizes) const {
     // For texture storage check that the current texture is large enough for
     // the new sizes of the tensor.
     utils::uvec3 virtual_extents =
-        calculate_image_extents(padded_sizes_, memory_layout_);
+        calculate_image_extents(padded_sizes_, axis_map_, memory_layout_);
 
     bool valid_resize = virtual_extents[0] <= image_extents()[0];
     valid_resize = valid_resize && virtual_extents[1] <= image_extents()[1];
@@ -454,7 +541,9 @@ void vTensor::virtual_reconfigure(
   VK_CHECK_COND(dim_order_is_valid(new_dim_order));
 
   check_sizes(new_sizes);
-  update_metadata(new_sizes, new_dim_order);
+  sizes_ = new_sizes;
+  dim_order_ = new_dim_order;
+  update_metadata();
 }
 
 void vTensor::virtual_resize(const std::vector<int64_t>& new_sizes) {
@@ -463,13 +552,58 @@ void vTensor::virtual_resize(const std::vector<int64_t>& new_sizes) {
       "new sizes cannot modify the dimensionality of the tensor ");
 
   check_sizes(new_sizes);
-  update_metadata(new_sizes, dim_order_);
+  sizes_ = new_sizes;
+  update_metadata();
+}
+
+/*
+ * Transposing the dim order is a bit unintuitive. dim0 and dim1 have swapped
+ * their "identities", so we need to swap the values of dim0 and dim1 wherever
+ * they appear in the dim order vector. Compare this to just swapping the
+ * elements at dim0 and dim1 in the `sizes` vectors.
+ */
+void transpose_dim_order_inplace(
+    std::vector<int64_t>& dim_order,
+    const int64_t dim0,
+    const int64_t dim1) {
+  for (int i = 0; i < dim_order.size(); ++i) {
+    if (dim_order[i] == dim0) {
+      dim_order[i] = dim1;
+    } else if (dim_order[i] == dim1) {
+      dim_order[i] = dim0;
+    }
+  }
+}
+
+void vTensor::virtual_transpose(const int64_t dim0, const int64_t dim1) {
+  std::iter_swap(sizes_.begin() + dim0, sizes_.begin() + dim1);
+  if (storage_type() == utils::kBuffer) {
+    transpose_dim_order_inplace(dim_order_, dim0, dim1);
+  } else {
+    const int dim0_whcn = sizes_.size() - 1 - dim0;
+    const int dim1_whcn = sizes_.size() - 1 - dim1;
+    // Cannot transpose batch dimension for texture storage
+    VK_CHECK_COND(dim0_whcn < 3 && dim1_whcn < 3);
+
+    std::iter_swap(
+        axis_map_.begin() + dim0_whcn, axis_map_.begin() + dim1_whcn);
+
+    if (packed_dim_whcn_idx() == dim0_whcn) {
+      memory_layout_ = utils::GPUMemoryLayout(dim1_whcn);
+    }
+    if (packed_dim_whcn_idx() == dim1_whcn) {
+      memory_layout_ = utils::GPUMemoryLayout(dim0_whcn);
+    }
+  }
+  update_metadata();
 }
 
 void vTensor::reallocate(const std::vector<int64_t>& new_sizes) {
-  update_metadata(new_sizes, dim_order_);
+  sizes_ = new_sizes;
+  update_metadata();
   storage_.discard_and_reallocate(
       calculate_padded_sizes(new_sizes, memory_layout_),
+      axis_map_,
       memory_layout_,
       dtype_);
 }
@@ -540,19 +674,21 @@ vkapi::VulkanBuffer allocate_buffer(
   }
 
   return adapter_ptr->vma().create_storage_buffer(
-      element_size(dtype) * numel, /*gpu_only = */ true, allocate_memory);
+      element_size(dtype) * numel, allocate_memory);
 }
 
 vTensorStorage::vTensorStorage(
     Context* const context,
     const utils::StorageType storage_type,
     const utils::GPUMemoryLayout gpu_memory_layout,
+    const std::vector<int64_t>& axis_map,
     const std::vector<int64_t>& padded_sizes,
     const vkapi::ScalarType dtype,
     const bool allocate_memory)
     : context_(context),
       storage_type_{storage_type},
-      image_extents_(calculate_image_extents(padded_sizes, gpu_memory_layout)),
+      image_extents_(
+          calculate_image_extents(padded_sizes, axis_map, gpu_memory_layout)),
       buffer_length_{utils::multiply_integers(padded_sizes)},
       buffer_offset_{0},
       image_(allocate_image(
@@ -577,13 +713,9 @@ vTensorStorage::vTensorStorage(
       image_extents_(other.image_extents_),
       buffer_length_{other.buffer_length_},
       buffer_offset_{buffer_offset},
-      image_(),
+      image_(other.image_),
       buffer_(other.buffer_, buffer_offset),
-      last_access_{other.last_access_} {
-  if (other.storage_type_ != utils::kBuffer) {
-    VK_THROW("Tensors with texture storage cannot be copied!");
-  }
-}
+      last_access_{other.last_access_} {}
 
 vTensorStorage::~vTensorStorage() {
   flush();
@@ -653,18 +785,15 @@ void vTensorStorage::transition(
 }
 
 bool vTensorStorage::is_copy_of(const vTensorStorage& other) const {
-  if (storage_type_ != other.storage_type_) {
-    return false;
+  if (storage_type_ == utils::kBuffer) {
+    return buffer_.is_copy_of(other.buffer_);
   }
-  // Copies are only enabled for buffer storage at the moment
-  if (storage_type_ != utils::kBuffer) {
-    return false;
-  }
-  return buffer_.is_copy_of(other.buffer_);
+  return image_.is_copy_of(other.image_);
 }
 
 void vTensorStorage::discard_and_reallocate(
     const std::vector<int64_t>& padded_sizes,
+    const std::vector<int64_t>& axis_map,
     const utils::GPUMemoryLayout gpu_memory_layout,
     const vkapi::ScalarType dtype) {
   const bool image_owns_memory = image_.owns_memory();
@@ -672,7 +801,8 @@ void vTensorStorage::discard_and_reallocate(
 
   flush();
 
-  image_extents_ = calculate_image_extents(padded_sizes, gpu_memory_layout);
+  image_extents_ =
+      calculate_image_extents(padded_sizes, axis_map, gpu_memory_layout);
   image_ = allocate_image(
       context_,
       image_extents_,

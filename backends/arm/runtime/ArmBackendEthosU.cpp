@@ -14,7 +14,6 @@
 #include <memory>
 
 #include <ethosu_driver.h>
-#include <pmu_ethosu.h>
 
 #include "executorch/backends/arm/runtime/VelaBinStream.h"
 #include "executorch/runtime/backend/interface.h"
@@ -32,7 +31,22 @@ typedef struct {
   bool permuted_io_flag;
 } ExecutionHandle;
 
-class ArmBackend final : public PyTorchBackendInterface {
+extern "C" {
+void __attribute__((weak)) ArmBackend_execute_begin() {}
+void __attribute__((weak)) ArmBackend_execute_end() {}
+}
+
+class ArmBackendExecuteCallbacks {
+ public:
+  ArmBackendExecuteCallbacks() {
+    ArmBackend_execute_begin();
+  }
+  ~ArmBackendExecuteCallbacks() {
+    ArmBackend_execute_end();
+  }
+};
+
+class ArmBackend final : public ::executorch::runtime::BackendInterface {
  public:
   ArmBackend() {}
 
@@ -83,6 +97,7 @@ class ArmBackend final : public PyTorchBackendInterface {
     ExecutionHandle* execution_handle = (ExecutionHandle*)input_handle;
     VelaHandles handles;
 
+    ArmBackendExecuteCallbacks ArmBackend_execute_callbacks;
     // Command stream - we know at this point it's aligned
     char* data = (char*)execution_handle->processed->data();
     ET_LOG(Info, "ArmBackend::execute %p", data);
@@ -233,7 +248,6 @@ class ArmBackend final : public PyTorchBackendInterface {
         }
       }
     }
-
     return Error::Ok;
   }
 
@@ -267,18 +281,27 @@ class ArmBackend final : public PyTorchBackendInterface {
       }
     }
     if (!permuted_shape) {
-      // Error check matching shapes in the general case
+      // Check the number of elements in each tensor match
+      int tensor_count = 1;
+      int io_count = 1;
+
       for (int i = 0; i < tensor.dim(); i++) {
-        if (tensor.size(i) != io->shape[i]) {
-          ET_LOG(Error, "Tensor input/output %d mismatched shape", index);
-          ET_LOG(
-              Error,
-              "dimension %d mismatch, %zd != %d",
-              index,
-              tensor.size(i),
-              io->shape[i]);
-          return Error::InvalidProgram;
-        }
+        tensor_count = tensor_count * tensor.size(i);
+      }
+
+      // The VelaIO type has a shape of fixed size 4
+      for (int i = 0; i < 4; i++) {
+        io_count = io_count * io->shape[i];
+      }
+
+      if (tensor_count != io_count) {
+        ET_LOG(Error, "Input tensor sizes do not match");
+        ET_LOG(
+            Error,
+            "Program expects %d elements but got %d",
+            io_count,
+            tensor_count);
+        return Error::InvalidProgram;
       }
     }
     *is_permuted = permuted_shape;

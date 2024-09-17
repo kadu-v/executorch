@@ -181,6 +181,8 @@ option(EXECUTORCH_BUILD_EXTENSION_RUNNER_UTIL "Build the Runner Util extension"
        OFF
 )
 
+option(EXECUTORCH_BUILD_EXTENSION_TENSOR "Build the Tensor extension" OFF)
+
 option(EXECUTORCH_BUILD_GTESTS "Build googletest based test binaries" OFF)
 
 option(EXECUTORCH_BUILD_MPS "Build the MPS backend" OFF)
@@ -195,7 +197,7 @@ option(EXECUTORCH_BUILD_KERNELS_OPTIMIZED "Build the optimized kernels" OFF)
 
 option(EXECUTORCH_BUILD_KERNELS_QUANTIZED "Build the quantized kernels" OFF)
 
-option(EXECUTORCH_BUILD_SDK "Build the ExecuTorch SDK")
+option(EXECUTORCH_BUILD_DEVTOOLS "Build the ExecuTorch Developer Tools")
 
 option(EXECUTORCH_BUILD_SIZE_TEST "Build the size test" OFF)
 
@@ -226,6 +228,7 @@ cmake_dependent_option(
 )
 
 if(EXECUTORCH_BUILD_KERNELS_CUSTOM_AOT)
+  set(EXECUTORCH_BUILD_EXTENSION_TENSOR ON)
   set(EXECUTORCH_BUILD_KERNELS_CUSTOM ON)
 endif()
 
@@ -613,7 +616,7 @@ if(EXECUTORCH_BUILD_XNNPACK)
   add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/backends/xnnpack)
 endif()
 
-if(EXECUTORCH_BUILD_SDK)
+if(EXECUTORCH_BUILD_DEVTOOLS)
   set(EXECUTORCH_BUILD_EXTENSION_DATA_LOADER
       ON
       CACHE BOOL "EXECUTORCH_BUILD_EXTENSION_DATA_LOADER" FORCE
@@ -637,6 +640,10 @@ if(EXECUTORCH_BUILD_EXTENSION_RUNNER_UTIL)
   add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/extension/runner_util)
 endif()
 
+if(EXECUTORCH_BUILD_EXTENSION_TENSOR)
+  add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/extension/tensor)
+endif()
+
 if(EXECUTORCH_BUILD_PTHREADPOOL
    AND EXECUTORCH_BUILD_CPUINFO
    AND CMAKE_CXX_STANDARD GREATER_EQUAL 14
@@ -651,7 +658,7 @@ if(EXECUTORCH_BUILD_PYBIND)
     add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/extension/data_loader)
   endif()
 
-  if(NOT EXECUTORCH_BUILD_SDK)
+  if(NOT EXECUTORCH_BUILD_DEVTOOLS)
     add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/devtools)
   endif()
 

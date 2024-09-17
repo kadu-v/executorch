@@ -85,6 +85,10 @@ class Tensor {
     return impl_->scalar_type();
   }
 
+  inline ScalarType dtype() const {
+    return scalar_type();
+  }
+
   /// Returns the size in bytes of one element of the tensor.
   ssize_t element_size() const {
     return impl_->element_size();
@@ -103,6 +107,11 @@ class Tensor {
   /// Returns the strides of the tensor at each dimension.
   const ArrayRef<StridesType> strides() const {
     return impl_->strides();
+  }
+
+  /// Returns the mutability of the shape of the tensor.
+  TensorShapeDynamism shape_dynamism() const {
+    return impl_->shape_dynamism();
   }
 
   /// Returns a pointer of type T to the constant underlying data blob.

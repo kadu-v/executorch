@@ -3,6 +3,8 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
+# pyre-unsafe
+
 import logging
 import operator
 import os
@@ -45,6 +47,8 @@ class TOSASupportedOperators(OperatorSupportBase):
             exir_ops.edge.aten.hardtanh.default,
             exir_ops.edge.aten.convolution.default,
             exir_ops.edge.aten.div.Tensor,
+            exir_ops.edge.aten.exp.default,
+            exir_ops.edge.aten.log.default,
             exir_ops.edge.aten.split_with_sizes_copy.default,
             exir_ops.edge.aten.full.default,
             exir_ops.edge.aten.mul.Tensor,
